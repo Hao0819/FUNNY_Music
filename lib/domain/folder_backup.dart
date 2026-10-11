@@ -22,7 +22,7 @@ class FolderBackup {
 
     return FolderBackup(
       version: (json['version'] as num?)?.toInt() ?? currentVersion,
-      createdAt: _parseDate(json['createdAt']),
+      createdAt: parseBackupDate(json['createdAt']),
       folders: folders.map((entry) {
         if (entry is! Map) {
           throw const FormatException('Every folder entry must be an object.');
@@ -85,7 +85,7 @@ class BackedUpFolder {
     return BackedUpFolder(
       id: json['id'] as String? ?? '',
       name: name,
-      createdAt: _parseDate(json['createdAt']),
+      createdAt: parseBackupDate(json['createdAt']),
       isSystem: json['isSystem'] == true,
       sortMode: json['sortMode'] as String? ?? 'manual',
       colorValue: (json['colorValue'] as num?)?.toInt(),
@@ -126,19 +126,37 @@ class BackedUpFolder {
 
 /// What restoring a backup actually changed.
 class FolderImportSummary {
-  const FolderImportSummary({required this.foldersCreated, required this.linksAdded});
+  const FolderImportSummary({
+    required this.foldersCreated,
+    required this.linksAdded,
+    this.linksRemapped = 0,
+    this.linksUnresolved = 0,
+  });
 
   final int foldersCreated;
   final int linksAdded;
 
+  /// Of [linksAdded], how many were matched to a file by name because the path
+  /// the backup carried had nothing behind it. Expected when the backup came
+  /// from another device; worth reporting, because the match is a guess.
+  final int linksRemapped;
+
+  /// Of [linksAdded], how many matched nothing at all and kept the path the
+  /// backup gave them. These show up in their folder as "not found".
+  final int linksUnresolved;
+
   bool get changedNothing => foldersCreated == 0 && linksAdded == 0;
 }
 
-DateTime _parseDate(Object? value) {
-  if (value is String) {
-    final parsed = DateTime.tryParse(value);
-    if (parsed != null) return parsed;
-  }
-  // A backup with an unreadable date is still a perfectly good list of paths.
-  return DateTime.fromMillisecondsSinceEpoch(0);
-}
+/// Reads a date written by [FolderBackup.encode], or null if it is not one.
+///
+/// Public because every section of a backup file stores its dates this way,
+/// and the sections are parsed from different files — see `app_backup.dart`.
+DateTime? tryParseBackupDate(Object? value) =>
+    value is String ? DateTime.tryParse(value) : null;
+
+/// [tryParseBackupDate] falling back to the epoch, for the dates a backup can
+/// manage without: one with an unreadable date is still a perfectly good list
+/// of paths.
+DateTime parseBackupDate(Object? value) =>
+    tryParseBackupDate(value) ?? DateTime.fromMillisecondsSinceEpoch(0);

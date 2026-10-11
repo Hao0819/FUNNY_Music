@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:music_player/data/hive/hive_setup.dart';
 import 'package:music_player/data/repositories/hidden_tracks_repository.dart';
+import 'package:music_player/domain/backup_path_resolver.dart';
 import 'package:music_player/features/library/providers/library_providers.dart';
 
 /// Hiding is the one Library action that outlives the app run without touching
@@ -103,5 +104,30 @@ void main() {
   test('the repository reads back whatever the notifier wrote', () async {
     await notifierIn(freshContainer()).hide(['/music/a.mp3']);
     expect(HiddenTracksRepository().paths, {'/music/a.mp3'});
+  });
+
+  test('a restore hides what the backup had hidden, at the paths this device uses', () async {
+    final repository = HiddenTracksRepository();
+
+    final hidden = await repository.importHidden(
+      const ['/old-phone/Music/skip-me.mp3'],
+      resolver: BackupPathResolver(const ['/storage/emulated/0/Music/skip-me.mp3']),
+    );
+
+    expect(hidden, 1);
+    expect(repository.paths, {'/storage/emulated/0/Music/skip-me.mp3'});
+  });
+
+  test('a restore never unhides, and adds nothing the second time', () async {
+    final repository = HiddenTracksRepository();
+    await repository.hide(['/music/a.mp3', '/music/kept.mp3']);
+
+    final first = await repository.importHidden(const ['/music/a.mp3', '/music/b.mp3']);
+    final second = await repository.importHidden(const ['/music/a.mp3', '/music/b.mp3']);
+
+    expect(first, 1, reason: 'only b.mp3 was missing');
+    expect(second, 0);
+    // The backup said nothing about kept.mp3, and a restore only ever adds.
+    expect(repository.paths, {'/music/a.mp3', '/music/b.mp3', '/music/kept.mp3'});
   });
 }

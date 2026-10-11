@@ -1,5 +1,7 @@
 import 'package:hive/hive.dart';
 
+import '../../domain/app_backup.dart';
+import '../../domain/backup_path_resolver.dart';
 import '../hive/hive_setup.dart';
 import '../hive/models/play_history_entry.dart';
 
@@ -12,9 +14,7 @@ class HistoryRepository {
 
   Future<void> recordPlay(String trackPath) async {
     await _box.add(PlayHistoryEntry(trackPath: trackPath, playedAt: DateTime.now()));
-    if (_box.length > _maxEntries) {
-      await _box.deleteAll(_box.keys.take(_box.length - _maxEntries).toList());
-    }
+    await _trim();
   }
 
   Set<String> recentlyPlayedPaths({required Duration within}) {
@@ -59,5 +59,52 @@ class HistoryRepository {
       if (entry != null && paths.contains(entry.trackPath)) keys.add(key);
     }
     await _box.deleteAll(keys);
+  }
+
+  /// The whole log, for a backup. Play counts are not exported as counts: they
+  /// are derived from this, and sending the entries keeps "recently played"
+  /// working on the other device too.
+  List<BackedUpPlay> exportEntries() =>
+      [for (final entry in _box.values) BackedUpPlay(trackPath: entry.trackPath, playedAt: entry.playedAt)];
+
+  /// Appends a backup's entries, skipping any already in the log, and returns
+  /// how many were added.
+  ///
+  /// Identity is the path and the timestamp together, which is what makes
+  /// importing the same backup twice add nothing: two plays of one track a
+  /// millisecond apart are not a thing a person can produce.
+  Future<int> importEntries(Iterable<BackedUpPlay> plays, {BackupPathResolver? resolver}) async {
+    final resolve = resolver ?? BackupPathResolver.none();
+    final existing = {for (final entry in _box.values) _identity(entry.trackPath, entry.playedAt)};
+
+    final additions = <PlayHistoryEntry>[];
+    for (final play in plays) {
+      final path = resolve.resolve(play.trackPath).path;
+      if (!existing.add(_identity(path, play.playedAt))) continue;
+      additions.add(PlayHistoryEntry(trackPath: path, playedAt: play.playedAt));
+    }
+
+    if (additions.isEmpty) return 0;
+    await _box.addAll(additions);
+    await _trim();
+    return additions.length;
+  }
+
+  String _identity(String path, DateTime playedAt) => '$path|${playedAt.toIso8601String()}';
+
+  /// Keeps the newest [_maxEntries] by timestamp rather than by insertion
+  /// order: an import appends plays that are older than what is already in the
+  /// box, so dropping the first-inserted keys would throw away the device's
+  /// most recent listening.
+  Future<void> _trim() async {
+    if (_box.length <= _maxEntries) return;
+
+    final keys = _box.keys.toList()
+      ..sort((a, b) {
+        final left = _box.get(a)?.playedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final right = _box.get(b)?.playedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return right.compareTo(left);
+      });
+    await _box.deleteAll(keys.skip(_maxEntries));
   }
 }

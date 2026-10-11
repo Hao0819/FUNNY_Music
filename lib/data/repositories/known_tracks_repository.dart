@@ -1,5 +1,7 @@
 import 'package:hive/hive.dart';
 
+import '../../domain/app_backup.dart';
+import '../../domain/backup_path_resolver.dart';
 import '../hive/box_keys.dart';
 import '../hive/hive_setup.dart';
 import '../hive/models/known_track_record.dart';
@@ -119,4 +121,61 @@ class KnownTracksRepository {
   }
 
   Future<void> forget(Iterable<String> paths) => _box.deleteAll(paths.map(trackKey));
+
+  /// When each file was first seen, for a backup. Records for files that have
+  /// gone missing are left out — there is nothing useful to carry about a file
+  /// the other device will not have either.
+  List<BackedUpKnownTrack> exportRecords() => [
+        for (final record in _box.values)
+          if (!record.missing)
+            BackedUpKnownTrack(
+              path: record.path,
+              firstSeenAt: record.firstSeenAt,
+              acknowledged: record.acknowledged,
+            ),
+      ];
+
+  /// Merges a backup's first-seen dates into the records this device already
+  /// has, and returns how many it changed.
+  ///
+  /// **Only existing records are updated, never created.** A record is this
+  /// repository's claim that the file was on the device, and [reconcile] reads
+  /// one with no matching file as "it vanished" — so inventing records from a
+  /// backup would file every song the new phone does not have under
+  /// Settings → Clean up missing files.
+  ///
+  /// The earlier [KnownTrackRecord.firstSeenAt] wins, because that is the date
+  /// the "recently added" filter is about: a track copied onto a new phone
+  /// today is not an arrival, it was in the library all along.
+  Future<int> importRecords(
+    Iterable<BackedUpKnownTrack> records, {
+    BackupPathResolver? resolver,
+  }) async {
+    final resolve = resolver ?? BackupPathResolver.none();
+    final pending = <String, KnownTrackRecord>{};
+
+    for (final backedUp in records) {
+      final path = resolve.resolve(backedUp.path).path;
+      final key = trackKey(path);
+      final existing = pending[key] ?? _box.get(key);
+      if (existing == null) continue;
+
+      final acknowledged = existing.acknowledged || backedUp.acknowledged;
+      if (!existing.firstSeenAt.isAfter(backedUp.firstSeenAt) && existing.acknowledged == acknowledged) {
+        continue;
+      }
+
+      pending[key] = KnownTrackRecord(
+        path: existing.path,
+        mediaStoreId: existing.mediaStoreId,
+        firstSeenAt: existing.firstSeenAt.isAfter(backedUp.firstSeenAt) ? backedUp.firstSeenAt : existing.firstSeenAt,
+        lastSeenAt: existing.lastSeenAt,
+        acknowledged: acknowledged,
+        missing: existing.missing,
+      );
+    }
+
+    if (pending.isNotEmpty) await _box.putAll(pending);
+    return pending.length;
+  }
 }

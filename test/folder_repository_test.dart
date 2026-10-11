@@ -6,6 +6,7 @@ import 'package:music_player/data/hive/hive_setup.dart';
 import 'package:music_player/data/hive/models/folder_model.dart';
 import 'package:music_player/data/hive/models/folder_track_link.dart';
 import 'package:music_player/data/repositories/folder_repository.dart';
+import 'package:music_player/domain/backup_path_resolver.dart';
 import 'package:music_player/domain/folder_backup.dart';
 
 /// Exercises the real boxes against a temporary directory — the import path
@@ -145,5 +146,72 @@ void main() {
 
     expect(summary.changedNothing, isTrue);
     expect(repo.getAllFolders().where((folder) => !folder.isSystem), isEmpty);
+  });
+
+  test('a backup from another phone relinks to the files this one has', () async {
+    final repo = repository();
+    final folder = await repo.createFolder('Night drive');
+    await repo.addTracks(folder.id, [
+      '/storage/emulated/0/Music/a.mp3',
+      '/storage/emulated/0/Music/b.mp3',
+    ]);
+    final backup = repo.exportBackup();
+
+    await Hive.box<FolderTrackLink>(HiveBoxes.folderTrackLinks).clear();
+
+    // The new device has the same songs under a different volume id, which is
+    // what copying a library to a phone with an SD card looks like.
+    final summary = await repo.importBackup(
+      backup,
+      resolver: BackupPathResolver(const [
+        '/storage/1A2B-3C4D/Music/a.mp3',
+        '/storage/1A2B-3C4D/Music/b.mp3',
+      ]),
+    );
+
+    expect(summary.linksAdded, 2);
+    expect(summary.linksRemapped, 2);
+    expect(summary.linksUnresolved, 0);
+    expect(repo.getTrackPaths(folder.id), [
+      '/storage/1A2B-3C4D/Music/a.mp3',
+      '/storage/1A2B-3C4D/Music/b.mp3',
+    ]);
+  });
+
+  test('a track the new device does not have keeps its path and is counted', () async {
+    final repo = repository();
+    final folder = await repo.createFolder('Night drive');
+    await repo.addTracks(folder.id, ['/old/a.mp3', '/old/missing.mp3']);
+    final backup = repo.exportBackup();
+
+    await Hive.box<FolderTrackLink>(HiveBoxes.folderTrackLinks).clear();
+
+    final summary = await repo.importBackup(
+      backup,
+      resolver: BackupPathResolver(const ['/new/a.mp3']),
+    );
+
+    expect(summary.linksAdded, 2);
+    expect(summary.linksRemapped, 1);
+    expect(summary.linksUnresolved, 1);
+    // Kept, not dropped: the link comes back on its own if the file turns up.
+    expect(repo.getTrackPaths(folder.id), ['/new/a.mp3', '/old/missing.mp3']);
+  });
+
+  test('a relinked backup imported twice reports nothing the second time', () async {
+    final repo = repository();
+    final folder = await repo.createFolder('Night drive');
+    await repo.addTracks(folder.id, ['/old/a.mp3']);
+    final backup = repo.exportBackup();
+
+    await Hive.box<FolderTrackLink>(HiveBoxes.folderTrackLinks).clear();
+    final resolver = BackupPathResolver(const ['/new/a.mp3']);
+
+    await repo.importBackup(backup, resolver: resolver);
+    final second = await repo.importBackup(backup, resolver: resolver);
+
+    expect(second.changedNothing, isTrue);
+    expect(second.linksRemapped, 0, reason: 'the counts describe what this restore added');
+    expect(repo.getTrackPaths(folder.id), ['/new/a.mp3']);
   });
 }

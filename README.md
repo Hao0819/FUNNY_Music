@@ -166,15 +166,74 @@ shows the dialog once and a refusal cannot be re-requested.
   restore per track and a Restore all. The row names itself even when the list
   is empty, since this is the only place that explains where a hidden track
   went
-- **Folder backup** — writes your folders and the tracks in them to a JSON file
-  under `Android/data/com.example.music_player/files/folder_backups`, where a
-  file manager can see it. Restoring adds back only what's missing, so it never
-  removes, renames or reorders anything and is safe to run twice. The same
-  screen reports any saved data the app couldn't read at launch, and where the
-  unreadable file was kept
+- **Backup & transfer** — writes everything a rescan can't rebuild to one JSON
+  file: your folders and what's in them, favorites, the hidden list, the play
+  log behind "recently played" and "most played", and your settings. The file
+  is saved under `Android/data/com.example.music_player/files/folder_backups`
+  and offered to the share sheet, so it can leave the device; **Import** takes
+  one back from anywhere with the file picker. Restoring adds back only what's
+  missing, so it never removes, renames or reorders anything and is safe to run
+  twice — settings are the one exception, and are asked about separately. The
+  same screen reports any saved data the app couldn't read at launch, and where
+  the unreadable file was kept. See [Moving to a new phone](#moving-to-a-new-phone)
 - App version and a note that your library stays on the device
 
 ---
+
+## Moving to a new phone
+
+Nothing here is in the cloud, so a move is two separate jobs: the audio files,
+which you copy yourself, and everything the app remembers about them, which
+travels as one backup file.
+
+1. **Old phone:** Settings → Backup & transfer → **Export and share**, and send
+   the file to yourself — Drive, a chat with yourself, Bluetooth, anything. It
+   is a few hundred KB of text.
+2. **Copy the audio across**, before importing anything. The app's own
+   downloads are in the public `Music/MusicPlayer/` directory —
+   `/storage/emulated/0/Music/MusicPlayer/`, visible to a file manager and to a
+   PC over USB — and anything you added yourself is wherever you put it,
+   usually `Music/` or `Download/`. USB to a PC and back, the new phone's own
+   migration tool, an SD card, or `adb pull /sdcard/Music/MusicPlayer <dir>`
+   and `adb push` into the same place on the new phone. Landing the files at
+   the *same* absolute paths is the easiest case, but see the note below if
+   they end up somewhere else. Don't send audio through a chat app — several
+   of them rename or re-encode what they carry. The backup JSON is fine that
+   way; the music isn't.
+3. **New phone:** install the same APK — the same application id, or it counts
+   as a different app — open it, grant audio access, and let the library scan
+   finish.
+4. If the songs you copied don't show up, the app can't see them: it only lists
+   what MediaStore has indexed, and a copy made by some tools never triggers a
+   media scan. A reboot fixes it.
+5. Settings → Backup & transfer → **Import a backup file**, pick the JSON, and
+   read the dialog: it says how many tracks in the file it found here, how many
+   it matched by file name, and how many it couldn't place.
+
+### What happens when the paths don't match
+
+Folders, favorites, the hidden list and the play log all reference tracks by
+absolute path, and those paths change between devices — a different volume id,
+or a directory you renamed on the way over. So a path with nothing behind it is
+retried by **file name** against the library on this device, and the link is
+re-pointed at what it finds. Entries that match nothing keep their original
+path and show up in their folder as "not found", which means they come back on
+their own if the files turn up later.
+
+Three caveats worth knowing:
+
+- Import waits for the first library scan, because it matches against what the
+  scan found. The button says so while it's disabled.
+- Import the backup *after* the audio has arrived and been scanned. A restore
+  only ever adds, so importing first stores every link at its old path as "not
+  found", and importing again once the files are there adds a second,
+  name-matched link beside the stale one for you to delete by hand.
+- The restored repeat mode is read when playback starts up, so it applies on
+  the next launch.
+
+A playlist cover picked from a photo is stored as a path to that photo, so it
+won't resolve on the new phone — the playlist falls back to its tracks'
+artwork, and you can pick the picture again.
 
 ## Installing
 
@@ -234,6 +293,8 @@ allowing "install from unknown sources" when prompted.
 | State management | `flutter_riverpod` |
 | Runtime permissions | `permission_handler` |
 | App version in Settings | `package_info_plus` |
+| Sending a backup off the device | `share_plus` |
+| Picking a backup file back in | `file_picker` |
 | Launcher icon generation | `flutter_launcher_icons` |
 | Native splash screen | `flutter_native_splash` |
 | Downloader (embedded Python + yt-dlp) | `io.github.junkfood02.youtubedl-android:library` |
@@ -297,7 +358,7 @@ Since `folder_track_links` is the only copy of work the user did by hand, an
 unreadable box file is **renamed aside**, never deleted, and the next launch
 starts a fresh box beside it. If even the rename fails, the box runs in memory
 for that session so the file is left intact for the next attempt. Settings →
-Folder backup reports what was set aside and where.
+Backup & transfer reports what was set aside and where.
 
 ### Startup never blocks on the platform
 
@@ -396,12 +457,13 @@ lib/
     favorites_history/          recently played / most played views
     player/                     player controller, mini player, now playing, queue
     download/                   search, recent searches, download queue, history
-    settings/                   theme, rescan, cleanup, hidden tracks, new-audio screen, about
+    settings/                   theme, rescan, cleanup, hidden tracks, backup & transfer, about
   services/
     audio/                      AudioPlayerHandler (just_audio + audio_service)
     permissions/                permission service + provider
     scanning/                   bridge to the native MediaStore query
     download/                   bridge to the embedded yt-dlp
+    backup/                     reads and writes the backup files
   widgets/                      shared: artwork, stand-in covers, empty state, permission gate
 ```
 
@@ -542,12 +604,23 @@ last five queries are remembered, a finished download can be filed into a
 playlist by holding it, and a track with no embedded artwork gets a bundled
 sleeve instead of a grey square. Installed and checked on a device.
 
-Most recently, the Library can hide a track. This came up as "can you delete
+Then the Library learned to hide a track. That came up as "can you delete
 audio from the Library" and landed as hiding rather than deleting on purpose:
 deleting is the one thing this app has never done, it cannot be undone, and
 under scoped storage it would have meant a system consent dialog for every file
 the app did not download itself. Hiding costs one Hive box of paths, is a
 complete undo, and leaves the files alone.
+
+Most recently, a backup became a way to change phones. It came up as "how
+do I get my audio and playlists onto a new phone", and the honest answer was
+"with a PC and adb": the backup file is written inside `Android/data`, which
+no file manager has been able to open since Android 11, and restoring only
+listed files already in that one directory. So the file now goes out through
+the share sheet and comes back through the file picker, it carries the hidden
+list, the play log and the settings rather than folders alone, and a path with
+no file behind it is retried by file name — because the one thing guaranteed
+to differ on the new device is the absolute paths every link is keyed by. See
+[Moving to a new phone](#moving-to-a-new-phone).
 
 ### Known limitations
 
@@ -557,7 +630,8 @@ complete undo, and leaves the files alone.
   device by a method that never triggers a media scan stays invisible to every
   app that queries MediaStore, this one included.
 - **Uninstalling deletes your folders and favorites.** Install a newer APK over
-  the old one instead. There is no backup/export yet.
+  the old one instead, or export a backup first — see
+  [Moving to a new phone](#moving-to-a-new-phone).
 - The release APK is signed with Flutter's **debug keys**, and while the app
   is called FUNNY Music everywhere a user can read it, its application id is
   still the template's `com.example.music_player`. Both need changing before

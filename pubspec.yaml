@@ -54,6 +54,11 @@ dependencies:
   # Lets a playlist take its cover from a photo on the device.
   image_picker: ^1.1.2
   image_cropper: ^12.2.1
+  # Backups are written inside Android/data, which no file manager has been
+  # able to open since Android 11 — these two are how one gets off this device
+  # and onto another without a PC.
+  share_plus: ^13.3.1
+  file_picker: ^13.1.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -1,6 +1,7 @@
 import 'package:hive/hive.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../domain/backup_path_resolver.dart';
 import '../../domain/folder_backup.dart';
 import '../hive/box_keys.dart';
 import '../hive/hive_setup.dart';
@@ -224,9 +225,20 @@ class FolderRepository {
   /// current name, colour and order. That makes importing the same file twice
   /// a no-op, which matters because the user restoring a backup usually
   /// cannot tell whether the first attempt did anything.
-  Future<FolderImportSummary> importBackup(FolderBackup backup) async {
+  ///
+  /// [resolver] is how a backup from another device lands on this one: a path
+  /// with no file behind it is retried by file name. Left out, paths are taken
+  /// literally, which is the right behaviour when restoring onto the device
+  /// that wrote the backup.
+  Future<FolderImportSummary> importBackup(
+    FolderBackup backup, {
+    BackupPathResolver? resolver,
+  }) async {
+    final paths = resolver ?? BackupPathResolver.none();
     var foldersCreated = 0;
     var linksAdded = 0;
+    var linksRemapped = 0;
+    var linksUnresolved = 0;
 
     for (final entry in backup.folders) {
       // Favorites is recreated under a fixed id by [ensureSystemFolders], so
@@ -250,13 +262,34 @@ class FolderRepository {
         foldersCreated++;
       }
 
-      final missing = entry.trackPaths.where((path) => !isTrackInFolder(folderId, path)).toList();
+      // The two match counts only ever describe links this call actually
+      // added, so restoring the same backup a second time reports nothing
+      // rather than re-announcing matches it is about to skip.
+      final missing = <String>[];
+      for (final path in entry.trackPaths) {
+        final resolved = paths.resolve(path);
+        if (isTrackInFolder(folderId, resolved.path)) continue;
+        missing.add(resolved.path);
+        switch (resolved.match) {
+          case PathMatch.renamed:
+            linksRemapped++;
+          case PathMatch.unresolved:
+            linksUnresolved++;
+          case PathMatch.exact:
+            break;
+        }
+      }
       if (missing.isEmpty) continue;
 
       await addTracks(folderId, missing);
       linksAdded += missing.length;
     }
 
-    return FolderImportSummary(foldersCreated: foldersCreated, linksAdded: linksAdded);
+    return FolderImportSummary(
+      foldersCreated: foldersCreated,
+      linksAdded: linksAdded,
+      linksRemapped: linksRemapped,
+      linksUnresolved: linksUnresolved,
+    );
   }
 }

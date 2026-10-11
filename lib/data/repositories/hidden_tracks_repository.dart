@@ -1,5 +1,6 @@
 import 'package:hive/hive.dart';
 
+import '../../domain/backup_path_resolver.dart';
 import '../hive/box_keys.dart';
 import '../hive/hive_setup.dart';
 
@@ -35,4 +36,27 @@ class HiddenTracksRepository {
   }
 
   Future<void> unhideAll() => _box.clear();
+
+  /// Hides what a backup had hidden, reporting how many rows that newly took
+  /// out of the Library.
+  ///
+  /// Additive like every other part of a restore: a track the user has since
+  /// unhidden on this device is hidden again, but nothing is ever unhidden
+  /// here — a restore must not put back a row the user has already dealt with.
+  Future<int> importHidden(Iterable<String> paths, {BackupPathResolver? resolver}) async {
+    final resolve = resolver ?? BackupPathResolver.none();
+    final existing = _box.keys.toSet();
+    final entries = <String, String>{};
+
+    for (final path in paths) {
+      final resolved = resolve.resolve(path).path;
+      final key = trackKey(resolved);
+      if (existing.contains(key)) continue;
+      entries[key] = resolved;
+    }
+
+    if (entries.isEmpty) return 0;
+    await _box.putAll(entries);
+    return entries.length;
+  }
 }

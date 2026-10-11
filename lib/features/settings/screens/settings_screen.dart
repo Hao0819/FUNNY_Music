@@ -10,7 +10,7 @@ import '../../../services/permissions/permission_provider.dart';
 import '../providers/backup_providers.dart';
 import '../providers/maintenance_providers.dart';
 import '../providers/theme_mode_provider.dart';
-import 'folder_backup_screen.dart';
+import 'backup_screen.dart';
 import 'hidden_tracks_screen.dart';
 
 final _packageInfoProvider = FutureProvider<PackageInfo>((ref) => PackageInfo.fromPlatform());
@@ -23,7 +23,7 @@ class SettingsScreen extends ConsumerWidget {
     final themeMode = ref.watch(themeModeProvider);
     final stale = ref.watch(staleRecordsProvider);
     final hidden = ref.watch(hiddenTracksProvider);
-    final backups = ref.watch(folderBackupsProvider).value;
+    final backups = ref.watch(appBackupsProvider).value;
     final setAside = ref.watch(setAsideBoxesProvider);
     final packageInfo = ref.watch(_packageInfoProvider).value;
     final theme = Theme.of(context);
@@ -110,18 +110,18 @@ class SettingsScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 28),
 
-          _SectionHeader(title: 'Playlists'),
+          _SectionHeader(title: 'Backup'),
           ListTile(
             leading: Icon(
               setAside.isEmpty ? Icons.backup_outlined : Icons.warning_amber_rounded,
               color: setAside.isEmpty ? null : theme.colorScheme.error,
             ),
-            title: const Text('Playlist backup'),
+            title: const Text('Backup & transfer'),
             subtitle: Text(
               setAside.isNotEmpty
                   ? 'Some saved data could not be read on this launch'
                   : switch (backups) {
-                      null => 'Export your playlists, or restore them from a file',
+                      null => 'Export, send to another phone, or restore from a file',
                       [] => 'No backup yet — your playlists exist in one place only',
                       [final latest, ...] => 'Last backup '
                           '${latest.backup == null ? latest.fileName : formatTimestamp(latest.backup!.createdAt)}',
@@ -129,7 +129,7 @@ class SettingsScreen extends ConsumerWidget {
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const FolderBackupScreen()),
+              MaterialPageRoute<void>(builder: (_) => const BackupScreen()),
             ),
           ),
           const SizedBox(height: 28),
