@@ -97,6 +97,13 @@ class FolderRepository {
     await folder.save();
   }
 
+  Future<void> setSortDescending(String folderId, bool descending) async {
+    final folder = _folders.get(folderId);
+    if (folder == null) return;
+    folder.sortDescending = descending;
+    await folder.save();
+  }
+
   String _linkKey(String folderId, String trackPath) => folderLinkKey(folderId, trackPath);
 
   String _linkKeyFor(FolderTrackLink link) => _linkKey(link.folderId, link.trackPath);
@@ -209,6 +216,7 @@ class FolderRepository {
             createdAt: folder.createdAt,
             isSystem: folder.isSystem,
             sortMode: folder.sortMode,
+            sortDescending: folder.isSortDescending,
             colorValue: folder.colorValue,
             coverPath: folder.coverPath,
             trackPaths: getTrackPaths(folder.id),
@@ -255,6 +263,7 @@ class FolderRepository {
             createdAt: entry.createdAt,
             isSystem: entry.isSystem,
             sortMode: entry.sortMode,
+            sortDescending: entry.sortDescending,
             colorValue: entry.colorValue,
             coverPath: entry.coverPath,
           ),

@@ -122,6 +122,20 @@ class _FolderDetailScreenState extends ConsumerState<FolderDetailScreen> {
                 ),
               ),
               actions: [
+                // A direction next to the sort rather than two entries per
+                // column in the menu, because it also applies to the custom
+                // order — "my order, bottom up" is not a sort column. The
+                // badge marks it as on the way the Library's filter does.
+                IconButton(
+                  tooltip: 'Reverse order',
+                  icon: Badge(
+                    isLabelVisible: folder.isSortDescending,
+                    child: const Icon(Icons.swap_vert),
+                  ),
+                  onPressed: () => ref
+                      .read(folderActionsProvider)
+                      .setSortDescending(folderId, !folder.isSortDescending),
+                ),
                 PopupMenuButton<FolderSortMode>(
                   tooltip: 'Sort',
                   icon: const Icon(Icons.sort),
@@ -177,37 +191,38 @@ class _FolderDetailScreenState extends ConsumerState<FolderDetailScreen> {
           }
 
           // Dragging is only meaningful when the full list is shown in its
-          // stored custom order — not while filtered by search or selecting.
-          final canReorder = sortMode == FolderSortMode.manual && !inSelectionMode && !isSearching;
+          // stored custom order — not while filtered by search. Selecting no
+          // longer rules it out: it only hides the handles, because taking the
+          // reorderable list away mid-session is what used to lose the scroll
+          // position.
+          final canReorder = sortMode == FolderSortMode.manual && !isSearching;
           final currentPath = ref.watch(currentMediaItemProvider).value?.id;
 
           return Column(
+            // Keyed children, because entering selection mode removes the
+            // header: matched by position instead, the list would be lined up
+            // against the header's element, rebuilt from scratch, and lose its
+            // offset — so long-pressing a row near the bottom threw the user
+            // back up to the first track.
             children: [
-              if (!inSelectionMode) _FolderPlayHeader(tracks: tracks, folder: folder),
-              if (contents.hasUnavailable) _UnavailableBanner(count: contents.unavailablePaths.length),
+              if (!inSelectionMode)
+                _FolderPlayHeader(key: const ValueKey('header'), tracks: tracks, folder: folder),
+              if (contents.hasUnavailable)
+                _UnavailableBanner(
+                  key: const ValueKey('unavailable'),
+                  count: contents.unavailablePaths.length,
+                ),
               Expanded(
-                child: canReorder
-                    ? _ReorderableTrackList(folderId: folderId, tracks: tracks, currentPath: currentPath)
-                    : ListView.builder(
-                        itemCount: tracks.length,
-                        itemBuilder: (context, index) {
-                          final track = tracks[index];
-                          return TrackTile(
-                            key: ValueKey(track.path),
-                            track: track,
-                            selectionMode: inSelectionMode,
-                            selected: selection.contains(track.path),
-                            isCurrent: track.path == currentPath,
-                            onLongPress: () =>
-                                ref.read(_folderDetailSelectionProvider.notifier).toggle(track.path),
-                            onTap: inSelectionMode
-                                ? () => ref.read(_folderDetailSelectionProvider.notifier).toggle(track.path)
-                                : () => ref
-                                    .read(playerControllerProvider)
-                                    .playTracks(tracks, initialIndex: index),
-                          );
-                        },
-                      ),
+                key: const ValueKey('tracks'),
+                child: _FolderTrackList(
+                  folderId: folderId,
+                  tracks: tracks,
+                  reorderable: canReorder,
+                  reversed: folder.isSortDescending,
+                  selectionMode: inSelectionMode,
+                  selection: selection,
+                  currentPath: currentPath,
+                ),
               ),
             ],
           );
@@ -289,7 +304,7 @@ class _UnavailableState extends StatelessWidget {
 
 /// The same fact, as a strip above a folder that is only partly resolvable.
 class _UnavailableBanner extends StatelessWidget {
-  const _UnavailableBanner({required this.count});
+  const _UnavailableBanner({super.key, required this.count});
 
   final int count;
 
@@ -326,7 +341,7 @@ class _UnavailableBanner extends StatelessWidget {
 /// how much music is in it — plus Play / Shuffle, so listening to one doesn't
 /// require first hunting for a track to tap.
 class _FolderPlayHeader extends ConsumerWidget {
-  const _FolderPlayHeader({required this.tracks, required this.folder});
+  const _FolderPlayHeader({super.key, required this.tracks, required this.folder});
 
   final List<Track> tracks;
   final FolderModel folder;
@@ -423,25 +438,47 @@ class _FolderPlayHeader extends ConsumerWidget {
   }
 }
 
-class _ReorderableTrackList extends ConsumerStatefulWidget {
-  const _ReorderableTrackList({required this.folderId, required this.tracks, this.currentPath});
+/// The folder's rows, in every state this list has.
+///
+/// One widget for all of them — draggable or not, selecting or not — rather
+/// than a reorderable list swapped for a plain one. Swapping replaces the
+/// element, and a new element scrolls from the top, which is how long-pressing
+/// a row to select it used to jump the list back to the first track.
+class _FolderTrackList extends ConsumerStatefulWidget {
+  const _FolderTrackList({
+    required this.folderId,
+    required this.tracks,
+    required this.reorderable,
+    required this.reversed,
+    required this.selectionMode,
+    required this.selection,
+    this.currentPath,
+  });
 
   final String folderId;
   final List<Track> tracks;
+  final bool reorderable;
+
+  /// Whether [tracks] is the stored order read back to front, which a drag has
+  /// to be turned around out of before it is saved.
+  final bool reversed;
+
+  final bool selectionMode;
+  final Set<String> selection;
   final String? currentPath;
 
   @override
-  ConsumerState<_ReorderableTrackList> createState() => _ReorderableTrackListState();
+  ConsumerState<_FolderTrackList> createState() => _FolderTrackListState();
 }
 
-class _ReorderableTrackListState extends ConsumerState<_ReorderableTrackList> {
+class _FolderTrackListState extends ConsumerState<_FolderTrackList> {
   /// Local copy so a drop lands instantly. Saving the new order is async, and
   /// rendering straight from the provider made the row snap back for a
   /// moment before jumping to where it was dropped.
   late List<Track> _tracks = [...widget.tracks];
 
   @override
-  void didUpdateWidget(_ReorderableTrackList oldWidget) {
+  void didUpdateWidget(_FolderTrackList oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.tracks, widget.tracks)) {
       _tracks = [...widget.tracks];
@@ -451,19 +488,26 @@ class _ReorderableTrackListState extends ConsumerState<_ReorderableTrackList> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final selectionNotifier = ref.read(_folderDetailSelectionProvider.notifier);
+    final showHandles = widget.reorderable && !widget.selectionMode;
 
     return ReorderableListView.builder(
       // The default drag gesture on mobile is long-press on the whole row,
       // but long-press here already means "select". Leaving the default on
       // meant selection always won and dragging never happened. Instead the
       // handle drags immediately and long-press stays free for selecting.
+      // With no handle rendered there is no way to start a drag, which is how
+      // this list stands in for a plain one.
       buildDefaultDragHandles: false,
       itemCount: _tracks.length,
       onReorderItem: (oldIndex, newIndex) {
         setState(() => _tracks.insert(newIndex, _tracks.removeAt(oldIndex)));
+        final paths = [for (final track in _tracks) track.path];
         ref.read(folderActionsProvider).reorder(
               widget.folderId,
-              [for (final track in _tracks) track.path],
+              // What the user just arranged is the stored order backwards, so
+              // writing it as-is would flip the folder on every drag.
+              widget.reversed ? paths.reversed.toList() : paths,
             );
       },
       itemBuilder: (context, index) {
@@ -471,16 +515,22 @@ class _ReorderableTrackListState extends ConsumerState<_ReorderableTrackList> {
         return TrackTile(
           key: ValueKey(track.path),
           track: track,
+          selectionMode: widget.selectionMode,
+          selected: widget.selection.contains(track.path),
           isCurrent: track.path == widget.currentPath,
-          onLongPress: () => ref.read(_folderDetailSelectionProvider.notifier).toggle(track.path),
-          onTap: () => ref.read(playerControllerProvider).playTracks(_tracks, initialIndex: index),
-          trailing: ReorderableDragStartListener(
-            index: index,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Icon(Icons.drag_handle, color: scheme.onSurfaceVariant),
-            ),
-          ),
+          onLongPress: () => selectionNotifier.toggle(track.path),
+          onTap: widget.selectionMode
+              ? () => selectionNotifier.toggle(track.path)
+              : () => ref.read(playerControllerProvider).playTracks(_tracks, initialIndex: index),
+          trailing: showHandles
+              ? ReorderableDragStartListener(
+                  index: index,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Icon(Icons.drag_handle, color: scheme.onSurfaceVariant),
+                  ),
+                )
+              : null,
         );
       },
     );

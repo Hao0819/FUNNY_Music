@@ -80,12 +80,13 @@ final folderTracksProvider = Provider.family<AsyncValue<FolderContents>, String>
     (mode) => mode.name == folder?.sortMode,
     orElse: () => FolderSortMode.manual,
   );
+  final descending = folder?.isSortDescending ?? false;
 
   return tracksAsync.whenData((allTracks) {
     final byPath = {for (final track in allTracks) track.path: track};
     final orderedPaths = repository.getTrackPaths(folderId);
 
-    final tracks = <Track>[];
+    var tracks = <Track>[];
     final unavailablePaths = <String>[];
     for (final path in orderedPaths) {
       final track = byPath[path];
@@ -96,8 +97,14 @@ final folderTracksProvider = Provider.family<AsyncValue<FolderContents>, String>
       }
     }
 
+    // Reversing the list after sorting rather than flipping the comparator
+    // is what lets 'descending' also mean something for the custom order,
+    // which has no comparator to flip.
     if (sortMode == FolderSortMode.manual) {
-      return FolderContents(tracks: tracks, unavailablePaths: unavailablePaths);
+      return FolderContents(
+        tracks: descending ? tracks.reversed.toList() : tracks,
+        unavailablePaths: unavailablePaths,
+      );
     }
 
     tracks.sort((a, b) => switch (sortMode) {
@@ -109,6 +116,9 @@ final folderTracksProvider = Provider.family<AsyncValue<FolderContents>, String>
               .compareTo(repository.addedAt(folderId, b.path) ?? DateTime(0)),
           FolderSortMode.manual => 0,
         });
+    if (descending) {
+      tracks = tracks.reversed.toList();
+    }
     return FolderContents(tracks: tracks, unavailablePaths: unavailablePaths);
   });
 });
@@ -144,6 +154,11 @@ class FolderActions {
 
   Future<void> setSortMode(String folderId, FolderSortMode mode) async {
     await _repository.setSortMode(folderId, mode.name);
+    _ref.invalidate(folderListProvider);
+  }
+
+  Future<void> setSortDescending(String folderId, bool descending) async {
+    await _repository.setSortDescending(folderId, descending);
     _ref.invalidate(folderListProvider);
   }
 

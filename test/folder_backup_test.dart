@@ -19,6 +19,7 @@ void main() {
             name: '夜曲',
             createdAt: DateTime.utc(2026, 9, 2),
             sortMode: 'title',
+            sortDescending: true,
             colorValue: 0xFF00897B,
             trackPaths: const [
               '/storage/emulated/0/Music/b.flac',
@@ -41,6 +42,7 @@ void main() {
     expect(folder.name, '夜曲');
     expect(folder.isSystem, isFalse);
     expect(folder.sortMode, 'title');
+    expect(folder.sortDescending, isTrue);
     expect(folder.colorValue, 0xFF00897B);
     expect(folder.trackPaths, [
       '/storage/emulated/0/Music/b.flac',
@@ -108,6 +110,7 @@ void main() {
       final folder = restored.folders.single;
       expect(folder.id, isEmpty);
       expect(folder.sortMode, 'manual');
+      expect(folder.sortDescending, isFalse);
       expect(folder.colorValue, isNull);
       expect(folder.isSystem, isFalse);
       expect(restored.createdAt.millisecondsSinceEpoch, 0);

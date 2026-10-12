@@ -108,4 +108,37 @@ void main() {
     expect(contents.tracks.map((t) => t.title), ['Apple', 'Zebra']);
     expect(contents.unavailablePaths, ['/gone.mp3']);
   });
+
+  test('reversing a folder flips its custom order, which has no comparator', () async {
+    final repository = FolderRepository()..ensureSystemFolders();
+    final folder = await repository.createFolder('Night drive');
+    await repository.addTracks(folder.id, ['/a.mp3', '/b.mp3', '/c.mp3']);
+    await repository.setSortDescending(folder.id, true);
+
+    final container = await containerWith([track('/a.mp3'), track('/b.mp3'), track('/c.mp3')]);
+    final contents = container.read(folderTracksProvider(folder.id)).value!;
+
+    expect(contents.tracks.map((t) => t.path), ['/c.mp3', '/b.mp3', '/a.mp3']);
+  });
+
+  test('reversing a sorted folder reads the sort back to front', () async {
+    final repository = FolderRepository()..ensureSystemFolders();
+    final folder = await repository.createFolder('Night drive');
+    await repository.addTracks(folder.id, ['/z.mp3', '/gone.mp3', '/a.mp3']);
+    await repository.setSortMode(folder.id, FolderSortMode.title.name);
+    await repository.setSortDescending(folder.id, true);
+
+    final container = await containerWith([
+      track('/z.mp3', title: 'Zebra'),
+      track('/a.mp3', title: 'Apple'),
+    ]);
+    final contents = container.read(folderTracksProvider(folder.id)).value!;
+
+    expect(contents.tracks.map((t) => t.title), ['Zebra', 'Apple']);
+    expect(
+      contents.unavailablePaths,
+      ['/gone.mp3'],
+      reason: 'reversing what is shown does not lose what could not be found',
+    );
+  });
 }

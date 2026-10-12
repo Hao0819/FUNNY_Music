@@ -37,6 +37,16 @@ class FolderModel extends HiveObject {
   @HiveField(6)
   String? coverPath;
 
+  /// Whether the folder is shown back to front — whichever order [sortMode]
+  /// names, read from the bottom up.
+  ///
+  /// Nullable, and reached through [isSortDescending], because the adapter
+  /// casts a stored field straight to its type: every folder written before
+  /// this field existed holds seven fields, so a non-nullable `bool` here
+  /// would throw on the first read of an existing box instead of defaulting.
+  @HiveField(7)
+  bool? sortDescending;
+
   FolderModel({
     required this.id,
     required this.name,
@@ -45,5 +55,8 @@ class FolderModel extends HiveObject {
     this.sortMode = 'manual',
     this.colorValue,
     this.coverPath,
+    this.sortDescending,
   });
+
+  bool get isSortDescending => sortDescending ?? false;
 }

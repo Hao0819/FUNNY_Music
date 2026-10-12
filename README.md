@@ -44,6 +44,9 @@ link — the file itself is untouched.
 - Drag tracks by their ☰ handle to reorder them inside a folder (only in
   "Custom order" mode). The handle drags; long-press on the row still selects
 - Per-folder sort: custom / title / artist / album / date added / duration
+- Reverse order ('swap' button next to Sort) reads the folder back to front,
+  including the custom order. Dragging still works while reversed: what you
+  arrange is what is saved
 - Removing a track from a folder unlinks it only — the file and the main
   library entry are untouched
 - **Favorites** is a built-in folder that can't be renamed or deleted; every
@@ -322,7 +325,7 @@ Hive only ever holds **links and bookkeeping**:
 
 | Box | Holds |
 |---|---|
-| `folders` | folder id, name, created date, sort mode, system flag |
+| `folders` | folder id, name, created date, sort mode, reverse flag, system flag |
 | `folder_track_links` | folder id ↔ track **file path**, added date, manual order |
 | `known_tracks` | files seen in previous scans, for new/deleted diffing |
 | `play_history` | append-only play log |

@@ -71,6 +71,7 @@ class BackedUpFolder {
     required this.trackPaths,
     this.isSystem = false,
     this.sortMode = 'manual',
+    this.sortDescending = false,
     this.colorValue,
     this.coverPath,
   });
@@ -88,6 +89,7 @@ class BackedUpFolder {
       createdAt: parseBackupDate(json['createdAt']),
       isSystem: json['isSystem'] == true,
       sortMode: json['sortMode'] as String? ?? 'manual',
+      sortDescending: json['sortDescending'] == true,
       colorValue: (json['colorValue'] as num?)?.toInt(),
       coverPath: json['coverPath'] as String?,
       // Paths are the payload, so anything that isn't a usable one is dropped
@@ -103,6 +105,10 @@ class BackedUpFolder {
   final DateTime createdAt;
   final bool isSystem;
   final String sortMode;
+
+  /// Whether the folder was being read back to front on the device that
+  /// wrote the backup.
+  final bool sortDescending;
   final int? colorValue;
 
   /// Where the chosen cover lived on the device that wrote the backup. Carried
@@ -118,6 +124,7 @@ class BackedUpFolder {
         'createdAt': createdAt.toIso8601String(),
         'isSystem': isSystem,
         'sortMode': sortMode,
+        'sortDescending': sortDescending,
         'colorValue': colorValue,
         'coverPath': coverPath,
         'trackPaths': trackPaths,
