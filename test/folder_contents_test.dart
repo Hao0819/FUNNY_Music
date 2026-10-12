@@ -141,4 +141,49 @@ void main() {
       reason: 'reversing what is shown does not lose what could not be found',
     );
   });
+
+  test('toggling the direction updates a folder the screen is already watching', () async {
+    final repository = FolderRepository()..ensureSystemFolders();
+    final folder = await repository.createFolder('Night drive');
+    await repository.addTracks(folder.id, ['/a.mp3', '/b.mp3', '/c.mp3']);
+
+    final container = await containerWith([track('/a.mp3'), track('/b.mp3'), track('/c.mp3')]);
+    // Listened to, not just read: the screen holds a subscription the whole
+    // time, so the provider stays alive and a stale cache stays on screen.
+    container.listen(folderTracksProvider(folder.id), (_, _) {});
+    expect(
+      container.read(folderTracksProvider(folder.id)).value!.tracks.map((t) => t.path),
+      ['/a.mp3', '/b.mp3', '/c.mp3'],
+    );
+
+    await container.read(folderActionsProvider).setSortDescending(folder.id, true);
+
+    expect(
+      container.read(folderTracksProvider(folder.id)).value!.tracks.map((t) => t.path),
+      ['/c.mp3', '/b.mp3', '/a.mp3'],
+    );
+  });
+
+  test('switching sort mode updates a folder the screen is already watching', () async {
+    final repository = FolderRepository()..ensureSystemFolders();
+    final folder = await repository.createFolder('Night drive');
+    await repository.addTracks(folder.id, ['/z.mp3', '/a.mp3']);
+
+    final container = await containerWith([
+      track('/z.mp3', title: 'Zebra'),
+      track('/a.mp3', title: 'Apple'),
+    ]);
+    container.listen(folderTracksProvider(folder.id), (_, _) {});
+    expect(
+      container.read(folderTracksProvider(folder.id)).value!.tracks.map((t) => t.title),
+      ['Zebra', 'Apple'],
+    );
+
+    await container.read(folderActionsProvider).setSortMode(folder.id, FolderSortMode.title);
+
+    expect(
+      container.read(folderTracksProvider(folder.id)).value!.tracks.map((t) => t.title),
+      ['Apple', 'Zebra'],
+    );
+  });
 }

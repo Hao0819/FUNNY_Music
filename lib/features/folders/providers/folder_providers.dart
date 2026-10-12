@@ -73,6 +73,14 @@ class FolderContents {
 
 final folderTracksProvider = Provider.family<AsyncValue<FolderContents>, String>((ref, folderId) {
   ref.watch(folderLinksTickProvider);
+  // How the folder is ordered lives on the FolderModel, and changing it
+  // mutates that object in place. Watching folderByIdProvider would not
+  // notice: it hands back the very same instance, which compares equal, so
+  // nothing downstream is ever told. The list provider builds a fresh List
+  // each time it is invalidated, which is the signal that actually arrives --
+  // without it a sort or a reverse only took effect on the next visit to the
+  // folder, once this provider had been disposed and rebuilt.
+  ref.watch(folderListProvider);
   final tracksAsync = ref.watch(libraryScanProvider);
   final repository = ref.watch(folderRepositoryProvider);
   final folder = repository.getFolder(folderId);
