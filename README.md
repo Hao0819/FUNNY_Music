@@ -78,6 +78,10 @@ rather than created by hand:
 - Play, pause, previous, next, seek
 - Shuffle, and repeat all / one / off — **repeat all is the default**, so a
   folder loops back to its first song, and your choice is remembered
+- **Picking a track plays its list in that list's order.** Shuffle comes on
+  only through Shuffle all or the shuffle button, and starting a list from a
+  track turns it back off — otherwise one Shuffle all tap left every playlist
+  playing in a random order until the app was restarted
 - Queue view: reorder by dragging, remove items, jump to any track
 - Mini player docked above the navigation bar, expanding to a full player.
   It also appears inside folders, history and new-audio screens
@@ -85,7 +89,12 @@ rather than created by hand:
   player plays the track you skipped to
 - Play and Shuffle buttons at the top of every folder
 - The row of the currently playing track is highlighted in every list
-- Background playback with notification and lock-screen controls
+- Background playback with notification and lock-screen controls, showing the
+  track's own cover
+- **Swiping the app out of Recents closes it** — unless something is playing,
+  which is the one case where carrying on is the point. A paused session used
+  to keep the media service started with no window and no notification, and
+  Force stop was the only way out of that
 - **Resumes where you left off**: reopening the app brings back the last queue,
   song and position, paused. Saved on every pause, every 5 seconds while
   playing, and whenever the app leaves the screen, so it survives the system
@@ -120,7 +129,9 @@ rather than created by hand:
   so they show up in your library like any other track
 - Choose **MP3 / M4A / Opus**; the video stream is never downloaded, only the
   best audio-only format
-- Live progress, ETA and per-download cancel
+- Live progress, ETA and per-download cancel. Cancel takes effect on the row
+  immediately, and a download that stops responding ends by itself instead of
+  spinning until the app is force-stopped
 - **Update yt-dlp** button — sites change how they serve media often enough to
   break extraction between app releases, so the extractor can be refreshed
   without shipping a new APK
@@ -159,6 +170,16 @@ dropped by the system. It is asked for after the first frame — never as a gate
 since the app works without it — and **Settings → Playback → Lock screen
 controls** reports the state and links out to system settings, because Android
 shows the dialog once and a refusal cannot be re-requested.
+
+Artwork goes through the session as a **file URI**, not as bytes:
+`audio_service` only reads a cover from a file or a `content://` provider, so
+`NotificationArtwork` writes the current track's picture into the cache
+directory and hands over the path. A track with no embedded picture gets the
+same bundled stand-in sleeve the list shows it with, so it doesn't look like
+a different song on the lock screen. Covers are resolved one track at a time
+as each comes round, since the session only ever displays the current item,
+and the title and artist are published immediately rather than held back until
+the file is written.
 
 ### Settings
 - **Rescan device** on demand
@@ -429,6 +450,20 @@ download completes.
 Progress arrives on an `EventChannel` keyed by a download id, because a
 `MethodChannel` reply can only fire once and a download reports for minutes.
 
+**A download is waited on with a watchdog, not just called.**
+`YoutubeDL.execute` reads yt-dlp's output until end of stream, and the FFmpeg
+child spawned for the audio extraction can hold that stream open after the
+file is finished — the call then never returns. The symptom was a finished
+download whose row kept its progress bar forever, with a Cancel button that
+did nothing and no way out but Force stop. So the yt-dlp call runs on its own
+thread and `awaitRunner` polls it: three minutes with no output line *and* no
+growth in the file being written means wedged rather than slow, at which point
+the process is killed, the read interrupted, and whatever complete file is in
+the scratch directory published as normal. A cancel does the same interrupting,
+because killing yt-dlp alone doesn't unblock that read — and the Dart side
+marks the row cancelled straight away rather than waiting for an event from a
+process that has stopped sending them.
+
 Search goes through yt-dlp's own `ytsearch` prefix rather than the **YouTube
 Data API**, for three reasons: the free API quota allows about 100 searches a
 day (a `search.list` call costs 100 of 10,000 daily units), an API key cannot
@@ -640,7 +675,6 @@ to differ on the new device is the absolute paths every link is keyed by. See
   still the template's `com.example.music_player`. Both need changing before
   distributing anywhere — but changing the id installs a second app beside the
   first and abandons its folders, so it is a one-time, deliberate move.
-- Notification artwork isn't shown yet; the notification uses the app icon.
 - **Downloading from YouTube violates its Terms of Service**, whatever tool is
   used. That is why apps of this kind are not on Google Play, and it applies to
   this one. Decide for yourself whether to keep the feature.
@@ -651,7 +685,8 @@ to differ on the new device is the absolute paths every link is keyed by. See
 - During yt-dlp's extraction and FFmpeg transcoding phases **no percentage is
   reported** — the progress bar sits at 0% and then at 100% while real work
   continues. On a long track the transcode alone can run for a minute and look
-  stalled.
+  stalled. A download that really is stuck gives up on its own after three
+  minutes of complete silence, and publishes the file if it got one.
 - Extraction **will break eventually** as sites change; use the in-app
   **Update yt-dlp** button rather than waiting for an app release. The same
   applies to search, which runs through the same extractor.

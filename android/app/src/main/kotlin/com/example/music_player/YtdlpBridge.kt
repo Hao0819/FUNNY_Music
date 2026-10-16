@@ -18,8 +18,14 @@ import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Bridges Flutter to the embedded yt-dlp.
@@ -43,6 +49,23 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
 
         /** Sub-directory of the shared Music/ collection downloads land in. */
         const val PUBLIC_SUBDIR = "MusicPlayer"
+
+        /** How often the thread waiting on a download looks in on it. */
+        const val POLL_MS = 2_000L
+
+        /**
+         * How long a download may produce nothing at all — no output line, no
+         * growth in the file it is writing — before it counts as wedged
+         * rather than slow.
+         *
+         * Generous on purpose: extracting audio from a long recording can run
+         * for a while without printing anything, and cutting that short would
+         * throw away a download that was about to finish.
+         */
+        const val IDLE_LIMIT_MS = 180_000L
+
+        /** Extensions yt-dlp gives a file it has not finished writing. */
+        val PARTIAL_EXTENSIONS = setOf("part", "ytdl", "tmp")
     }
 
     // init and each download block for a long time, so they can't share a
@@ -52,6 +75,12 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
 
     /** Downloads yt-dlp is still running, so one can be told apart from a cancel. */
     private val activeDownloads = ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * The yt-dlp call behind each running download, so a cancel can interrupt
+     * the thread reading its output and not just kill the process.
+     */
+    private val runners = ConcurrentHashMap<String, Future<*>>()
 
     @Volatile
     private var initialized = false
@@ -103,6 +132,15 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
     }
 
     fun dispose() {
+        // Processes first: shutting the pool down interrupts the threads
+        // waiting on them, but the Python process each download started is a
+        // process of its own and would otherwise go on running — and keep the
+        // app alive with it — after the window it was started from is gone.
+        for (id in activeDownloads.keys) {
+            activeDownloads.remove(id)
+            destroyProcess(id)
+        }
+        runners.clear()
         worker.shutdownNow()
     }
 
@@ -335,26 +373,51 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
                 }
 
                 Log.i(TAG, "download($downloadId) invoking yt-dlp")
-                YoutubeDL.getInstance().execute(request, downloadId) { progress, eta, line ->
-                    Log.v(TAG, "download($downloadId) $progress% $line")
-                    emit(
-                        downloadId,
-                        "progress",
-                        mapOf(
-                            "progress" to progress.toDouble(),
-                            "eta" to eta,
-                            "line" to line,
-                        ),
-                    )
+                val lastOutput = AtomicLong(System.currentTimeMillis())
+
+                // Run on a thread of its own and waited on rather than called
+                // straight: `execute` reads yt-dlp's output until end of
+                // stream, and the FFmpeg child spawned for the audio
+                // extraction can hold that stream open after the file is
+                // finished and written. The call then never returns — the
+                // download was done, the row kept its progress bar, and
+                // nothing short of force-stopping the app got rid of it.
+                val runner = worker.submit {
+                    YoutubeDL.getInstance().execute(request, downloadId) { progress, eta, line ->
+                        lastOutput.set(System.currentTimeMillis())
+                        Log.v(TAG, "download($downloadId) $progress% $line")
+                        emit(
+                            downloadId,
+                            "progress",
+                            mapOf(
+                                "progress" to progress.toDouble(),
+                                "eta" to eta,
+                                "line" to line,
+                            ),
+                        )
+                    }
+                }
+                runners[downloadId] = runner
+
+                val stalled = !awaitRunner(downloadId, runner, scratch, lastOutput)
+                Log.i(TAG, "download($downloadId) yt-dlp done, stalled=$stalled")
+
+                // A cancel that landed while we were waiting: the row has
+                // already been told, and the half-written file goes with the
+                // scratch directory.
+                if (!activeDownloads.containsKey(downloadId)) {
+                    emit(downloadId, "cancelled", emptyMap())
+                    return@execute
                 }
 
-                // Extraction leaves the original stream behind next to the
-                // transcode on some formats, so take the largest file rather
-                // than assuming there is exactly one.
-                Log.i(TAG, "download($downloadId) yt-dlp returned")
-                val produced = scratch.listFiles()?.maxByOrNull { it.length() }
+                val produced = producedFile(scratch, format, finishedOnly = stalled)
                 if (produced == null) {
-                    emit(downloadId, "error", mapOf("message" to "yt-dlp produced no file"))
+                    val message = if (stalled) {
+                        "yt-dlp stopped responding before it finished"
+                    } else {
+                        "yt-dlp produced no file"
+                    }
+                    emit(downloadId, "error", mapOf("message" to message))
                     return@execute
                 }
 
@@ -376,8 +439,99 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
                 }
             } finally {
                 activeDownloads.remove(downloadId)
+                runners.remove(downloadId)
                 scratch.deleteRecursively()
             }
+        }
+    }
+
+    /**
+     * Waits for [runner], giving up if the download goes completely quiet for
+     * [IDLE_LIMIT_MS] — no output line and no growth in the file it is
+     * writing.
+     *
+     * Returns false when it gave up, which is not the same as a failure: the
+     * read can wedge after a perfectly good file has been written, so the
+     * caller decides what the scratch directory is worth.
+     */
+    private fun awaitRunner(
+        id: String,
+        runner: Future<*>,
+        scratch: File,
+        lastOutput: AtomicLong,
+    ): Boolean {
+        var lastSize = -1L
+
+        while (true) {
+            try {
+                runner.get(POLL_MS, TimeUnit.MILLISECONDS)
+                return true
+            } catch (timeout: TimeoutException) {
+                // Still going; fall through to the checks below.
+            } catch (cancelled: CancellationException) {
+                return true
+            } catch (failed: ExecutionException) {
+                // yt-dlp's own failure. Unwrapped so the caller's catch block
+                // reports what went wrong rather than "ExecutionException".
+                throw failed.cause ?: failed
+            }
+
+            // Cancelled from the UI. cancel() has already killed the process
+            // and interrupted the read, and has told the row itself.
+            if (!activeDownloads.containsKey(id)) return true
+
+            val size = scratchFootprint(scratch)
+            if (size != lastSize) {
+                lastSize = size
+                lastOutput.set(System.currentTimeMillis())
+            }
+            if (System.currentTimeMillis() - lastOutput.get() < IDLE_LIMIT_MS) continue
+
+            Log.w(TAG, "download($id) silent for ${IDLE_LIMIT_MS / 1000}s; giving up on the read")
+            destroyProcess(id)
+            runner.cancel(true)
+            return false
+        }
+    }
+
+    /**
+     * Total bytes in a download's scratch directory.
+     *
+     * Summed rather than taken from the largest file: the transcode writes a
+     * second, smaller file beside the stream it is reading, so watching the
+     * largest one alone would see nothing happening for as long as the
+     * extraction took.
+     */
+    private fun scratchFootprint(scratch: File): Long =
+        scratch.listFiles()?.sumOf { it.length() } ?: -1L
+
+    /**
+     * The file a download produced, or null when there isn't one.
+     *
+     * Extraction leaves the original stream next to the transcode on some
+     * formats, so the largest file wins rather than assuming there is exactly
+     * one. [finishedOnly] insists on the extension that was asked for as
+     * well: a download that was given up on mid-flight leaves a part file
+     * behind, and filing that into the library would make half a song look
+     * like a whole one.
+     */
+    private fun producedFile(scratch: File, format: String, finishedOnly: Boolean): File? {
+        val files = scratch.listFiles()?.filter { it.isFile && it.length() > 0 } ?: return null
+        val candidates = if (finishedOnly) {
+            files.filter { it.extension.equals(format, ignoreCase = true) }
+        } else {
+            files.filterNot { it.extension.lowercase() in PARTIAL_EXTENSIONS }
+        }
+        return candidates.maxByOrNull { it.length() }
+    }
+
+    /** Returns false rather than throwing when there is no process to kill. */
+    private fun destroyProcess(id: String): Boolean {
+        return try {
+            YoutubeDL.getInstance().destroyProcessById(id)
+        } catch (error: Throwable) {
+            Log.w(TAG, "destroyProcessById($id) failed", error)
+            false
         }
     }
 
@@ -386,15 +540,16 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
         // genuine failure when its process dies.
         activeDownloads.remove(id)
 
-        val killed = try {
-            // Returns false rather than throwing when yt-dlp has no process
-            // under this id — which happens whenever the cancel lands outside
-            // the window where one is actually running.
-            YoutubeDL.getInstance().destroyProcessById(id)
-        } catch (error: Throwable) {
-            Log.w(TAG, "destroyProcessById($id) failed", error)
-            false
-        }
+        // False whenever the cancel lands outside the window where yt-dlp
+        // actually has a process under this id.
+        val killed = destroyProcess(id)
+
+        // Killing yt-dlp does not reliably unblock the thread reading its
+        // output — the FFmpeg child it spawned can still be holding that
+        // stream open — so the read is interrupted too. Without this a
+        // cancelled download went on occupying a thread, and its Python
+        // process went on being a reason the app never fully closed.
+        runners.remove(id)?.cancel(true)
 
         // Emitted here rather than left to the worker's catch block. Killing
         // the process doesn't reliably unblock `execute` — it can still be

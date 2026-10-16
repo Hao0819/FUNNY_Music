@@ -42,6 +42,12 @@ class PlayerController {
     // be logged as a play.
     _mediaItemSubscription = _handler.mediaItem.skip(1).listen((item) async {
       if (item == null) return;
+      // The same track is published more than once — again as soon as its
+      // cover has been written out for the notification — and one track
+      // coming on is one play however many times the session republishes it.
+      if (item.id == _lastLoggedPath) return;
+      _lastLoggedPath = item.id;
+
       await _ref.read(historyRepositoryProvider).recordPlay(item.id);
       _ref.read(historyTickProvider.notifier).bump();
     });
@@ -51,18 +57,28 @@ class PlayerController {
   final Ref _ref;
   late final StreamSubscription<MediaItem?> _mediaItemSubscription;
 
+  /// The last track written to the play log, so republishing the same one
+  /// doesn't count twice.
+  String? _lastLoggedPath;
+
   AudioPlayerHandler get _handler => _ref.read(audioHandlerProvider);
 
   Future<void> playTracks(List<Track> tracks, {int initialIndex = 0}) {
     return _handler.playTracks(tracks, initialIndex: initialIndex);
   }
 
-  /// Starts a list on a random track with shuffle turned on. Shuffle is set
-  /// after loading, since it shuffles the queue that is actually loaded.
+  /// Starts a list on a random track with shuffle turned on.
+  ///
+  /// This is the only thing that turns shuffle on by itself: [playTracks]
+  /// turns it back off, so picking a track out of a list always plays that
+  /// list in its own order.
   Future<void> shufflePlay(List<Track> tracks) async {
     if (tracks.isEmpty) return;
-    await _handler.playTracks(tracks, initialIndex: Random().nextInt(tracks.length));
-    await _handler.setShuffleMode(AudioServiceShuffleMode.all);
+    await _handler.playTracks(
+      tracks,
+      initialIndex: Random().nextInt(tracks.length),
+      shuffle: true,
+    );
   }
 
   Future<void> togglePlayPause() {

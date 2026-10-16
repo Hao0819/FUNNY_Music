@@ -191,6 +191,13 @@ class DownloadQueueNotifier extends Notifier<List<DownloadTask>> {
   }
 
   Future<void> cancel(String id) async {
+    // Marked cancelled here rather than on the way back: the native side
+    // answers with an event, and a download whose process has stopped
+    // producing output is exactly the one whose events have stopped arriving.
+    // Waiting for it left the row spinning with a Cancel button that visibly
+    // did nothing, so the row goes quiet now and the native side catches up.
+    _replace(id, (task) => task.copyWith(status: DownloadStatus.cancelled, detail: 'Cancelled'));
+
     try {
       await ref.read(ytdlpServiceProvider).cancel(id);
     } on Object {
@@ -210,11 +217,25 @@ class DownloadQueueNotifier extends Notifier<List<DownloadTask>> {
     state = state.where((task) => task.id != id || !task.isFinished).toList();
   }
 
+  /// Rewrites one row in place, leaving the rest of the list as it was.
+  void _replace(String id, DownloadTask Function(DownloadTask task) update) {
+    final index = state.indexWhere((task) => task.id == id);
+    if (index < 0) return;
+    state = [...state]..[index] = update(state[index]);
+  }
+
   void _apply(YtdlpEvent event) {
     final index = state.indexWhere((task) => task.id == event.id);
     if (index < 0) return;
 
     final task = state[index];
+
+    // Progress from a download the user already cancelled is ignored, so a
+    // process that takes a moment to die can't put the bar back on a row that
+    // has been struck out. Anything final still lands: a cancel that raced a
+    // finished file should say the file arrived.
+    if (task.status == DownloadStatus.cancelled && event is YtdlpProgress) return;
+
     final updated = switch (event) {
       YtdlpProgress(:final percent, :final eta, :final line) => task.copyWith(
           status: DownloadStatus.running,

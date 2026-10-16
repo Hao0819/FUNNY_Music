@@ -1,13 +1,17 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../domain/track.dart';
+import 'notification_artwork.dart';
 
 /// Bridges [just_audio] (playback) and [audio_service] (notification, lock
 /// screen, media buttons, background execution). The rest of the app talks to
 /// this through `PlayerController` rather than touching either package.
 class AudioPlayerHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
-  AudioPlayerHandler() {
+  AudioPlayerHandler({NotificationArtwork? artwork})
+      : _artwork = artwork ?? NotificationArtwork() {
     // Forwarded with listen() rather than pipe(): pipe() holds the subject in
     // addStream mode, where any other add() throws "Bad state". Repeat and
     // shuffle need to push an updated state straight away, so the handler has
@@ -18,11 +22,21 @@ class AudioPlayerHandler extends BaseAudioHandler with QueueHandler, SeekHandler
       final items = queue.value;
       if (index != null && index >= 0 && index < items.length) {
         mediaItem.add(items[index]);
+        // Resolved one track at a time, as it comes round, rather than for
+        // the whole queue up front: the session only ever displays the
+        // current item, so a thousand-track queue would mean a thousand
+        // artwork queries for pictures nothing is going to show.
+        unawaited(_publishArtwork(index));
       }
     });
   }
 
   final AudioPlayer _player = AudioPlayer();
+  final NotificationArtwork _artwork;
+
+  /// The tracks behind the current queue, in the same order, so a queue index
+  /// can be turned back into the MediaStore id artwork is looked up by.
+  List<Track> _tracks = const [];
 
   AudioPlayer get player => _player;
 
@@ -31,9 +45,24 @@ class AudioPlayerHandler extends BaseAudioHandler with QueueHandler, SeekHandler
   Stream<SequenceState> get sequenceStateStream => _player.sequenceStateStream;
 
   /// Replaces the queue with [tracks] and starts playing at [initialIndex].
-  Future<void> playTracks(List<Track> tracks, {int initialIndex = 0}) async {
+  ///
+  /// [shuffle] is applied explicitly rather than left as whatever it happened
+  /// to be, because just_audio draws a *fresh random order* for every list it
+  /// loads. With shuffle still enabled from an earlier Shuffle all, picking a
+  /// track in a playlist then walked that playlist in an order nobody asked
+  /// for — and since shuffle isn't remembered across launches, restarting the
+  /// app looked like the only cure. Loading a queue now always states which
+  /// of the two it wants.
+  Future<void> playTracks(
+    List<Track> tracks, {
+    int initialIndex = 0,
+    bool shuffle = false,
+  }) async {
     if (tracks.isEmpty) return;
     await _loadQueue(tracks, initialIndex: initialIndex);
+    await setShuffleMode(
+      shuffle ? AudioServiceShuffleMode.all : AudioServiceShuffleMode.none,
+    );
     await _player.play();
   }
 
@@ -47,8 +76,10 @@ class AudioPlayerHandler extends BaseAudioHandler with QueueHandler, SeekHandler
   Future<void> _loadQueue(List<Track> tracks, {required int initialIndex, Duration position = Duration.zero}) async {
     final index = initialIndex.clamp(0, tracks.length - 1);
     final items = tracks.map(_toMediaItem).toList();
+    _tracks = tracks;
     queue.add(items);
     mediaItem.add(items[index]);
+    unawaited(_publishArtwork(index));
 
     await _player.setAudioSources(
       [for (final track in tracks) AudioSource.file(track.path)],
@@ -94,6 +125,42 @@ class AudioPlayerHandler extends BaseAudioHandler with QueueHandler, SeekHandler
     await super.stop();
   }
 
+  /// Swiping the app out of Recents means "I'm done" — unless something is
+  /// actually playing, in which case the whole point of the media session is
+  /// that it keeps going.
+  ///
+  /// Without this the session stays registered and its service stays started
+  /// after the window is gone: no notification, nothing on screen, and the
+  /// app still listed as running with Force stop the only way out of it.
+  @override
+  Future<void> onTaskRemoved() async {
+    if (_player.playing) return;
+    await stop();
+  }
+
+  /// Puts [index]'s cover on the media session once it has been written out.
+  ///
+  /// Published as a second update to the same item rather than by holding the
+  /// item back until its picture is ready: writing the file crosses a platform
+  /// channel, and the title and artist should be up the moment the track
+  /// changes, not a few hundred milliseconds later.
+  Future<void> _publishArtwork(int index) async {
+    if (index < 0 || index >= _tracks.length) return;
+    final track = _tracks[index];
+
+    final uri = await _artwork.uriFor(track);
+    if (uri == null) return;
+
+    // The queue may have been replaced, or the track skipped past, while the
+    // cover was being written — in which case this is no longer the artwork
+    // for what is playing.
+    final current = mediaItem.value;
+    if (current == null || current.id != track.path) return;
+    if (current.artUri == uri) return;
+
+    mediaItem.add(current.copyWith(artUri: uri));
+  }
+
   @override
   Future<void> setRepeatMode(AudioServiceRepeatMode repeatMode) async {
     await _player.setLoopMode(switch (repeatMode) {
@@ -123,6 +190,13 @@ class AudioPlayerHandler extends BaseAudioHandler with QueueHandler, SeekHandler
     await _player.moveAudioSource(oldIndex, newIndex);
     items.insert(newIndex, items.removeAt(oldIndex));
     queue.add(items);
+    // Moved the same way as the queue itself: this list is how an index is
+    // turned back into the track whose cover the session shows.
+    if (_tracks.length == items.length) {
+      final tracks = [..._tracks];
+      tracks.insert(newIndex, tracks.removeAt(oldIndex));
+      _tracks = tracks;
+    }
   }
 
   @override
@@ -133,6 +207,9 @@ class AudioPlayerHandler extends BaseAudioHandler with QueueHandler, SeekHandler
     await _player.removeAudioSourceAt(index);
     items.removeAt(index);
     queue.add(items);
+    if (_tracks.length == items.length + 1) {
+      _tracks = [..._tracks]..removeAt(index);
+    }
   }
 
   Future<void> dispose() => _player.dispose();
