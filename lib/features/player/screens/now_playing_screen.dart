@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/duration_format.dart';
+import '../../../domain/track.dart';
 import '../../../widgets/artwork_image.dart';
 import '../../../widgets/empty_state.dart';
 import '../../folders/providers/folder_providers.dart';
@@ -152,7 +153,7 @@ class _NowPlayingBody extends ConsumerWidget {
                                   builder: (context, constraints) {
                                     final side = constraints.biggest.shortestSide;
                                     return ArtworkImage(
-                                      trackId: track?.id,
+                                      track: track,
                                       size: side,
                                       borderRadius: AppTheme.radiusMedium,
                                       iconSize: side * 0.3,
@@ -163,7 +164,7 @@ class _NowPlayingBody extends ConsumerWidget {
                             );
                           },
                           child: _ArtworkCard(
-                            trackId: track?.id,
+                            track: track,
                             size: artworkSize,
                             glow: scheme.primary,
                           ),
@@ -312,16 +313,16 @@ class _MaybeHero extends StatelessWidget {
 /// Artwork plus the glow beneath it. Split out so the [Hero] has a single
 /// child whose shape the flight builder can mirror.
 class _ArtworkCard extends StatelessWidget {
-  const _ArtworkCard({required this.trackId, required this.size, required this.glow});
+  const _ArtworkCard({required this.track, required this.size, required this.glow});
 
-  final int? trackId;
+  final Track? track;
   final double size;
   final Color glow;
 
   @override
   Widget build(BuildContext context) {
     return ArtworkImage(
-      trackId: trackId,
+      track: track,
       size: size,
       borderRadius: AppTheme.radiusMedium,
       iconSize: size * 0.3,

@@ -77,7 +77,7 @@ class TrackTile extends StatelessWidget {
                   if (selectionMode)
                     _SelectionBox(selected: selected)
                   else
-                    _Cover(trackId: track.id, isCurrent: isCurrent),
+                    _Cover(track: track, isCurrent: isCurrent),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
@@ -145,14 +145,14 @@ class TrackTile extends StatelessWidget {
 
 /// The cover, with a level meter over it while this is the playing track.
 class _Cover extends StatelessWidget {
-  const _Cover({required this.trackId, required this.isCurrent});
+  const _Cover({required this.track, required this.isCurrent});
 
-  final int trackId;
+  final Track track;
   final bool isCurrent;
 
   @override
   Widget build(BuildContext context) {
-    final cover = ArtworkImage(trackId: trackId, size: 48, borderRadius: 8, iconSize: 20);
+    final cover = ArtworkImage(track: track, size: 48, borderRadius: 8, iconSize: 20);
     if (!isCurrent) return cover;
 
     return SizedBox(

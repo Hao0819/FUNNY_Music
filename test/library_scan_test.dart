@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:music_player/data/repositories/audio_library_repository.dart';
@@ -48,7 +49,35 @@ class _RecordingKnownTracks extends KnownTracksRepository {
   }
 }
 
+class _PermissionDeniedQuery extends OnAudioQuery {
+  @override
+  Future<List<SongModel>> querySongs({
+    SongSortType? sortType,
+    OrderType? orderType,
+    UriType? uriType,
+    bool? ignoreCase,
+    String? path,
+  }) async {
+    throw PlatformException(code: 'MissingPermissions');
+  }
+}
+
+class _NativeLibrary extends MediaStoreScanner {
+  @override
+  Future<List<Track>> queryAudioFiles() async => [track('/song.mp3')];
+}
+
 void main() {
+  test('uses the native library when the plugin rejects audio access', () async {
+    final scan = AudioLibraryRepository(
+      _PermissionDeniedQuery(),
+      _NativeLibrary(),
+    ).startScan();
+
+    expect((await scan.firstPass).single.path, '/song.mp3');
+    expect(await scan.complete, isNull);
+  });
+
   late _StubLibrary library;
   late _RecordingKnownTracks known;
 

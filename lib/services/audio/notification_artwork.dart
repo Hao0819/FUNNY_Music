@@ -2,12 +2,13 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:on_audio_query/on_audio_query.dart' show ArtworkType, OnAudioQuery;
+import 'package:on_audio_query/on_audio_query.dart' show OnAudioQuery;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../domain/track.dart';
 import '../../widgets/fallback_cover.dart';
+import 'track_artwork.dart';
 
 /// Covers for the notification and the lock screen, written out as files.
 ///
@@ -25,20 +26,21 @@ class NotificationArtwork {
 
   final OnAudioQuery _query;
 
-  /// One resolved URI per MediaStore id, misses included: a query that came
+  /// One resolved URI per track, misses included: a query that came
   /// back empty would otherwise cross the platform channel again every time
   /// that track came round in the queue.
-  final Map<int, Uri?> _resolved = {};
+  final Map<(int, String), Uri?> _resolved = {};
 
   Future<Directory>? _directory;
 
   /// The cover for [track] as a `file://` URI, or null when it couldn't be
   /// written — in which case the session just shows no artwork.
   Future<Uri?> uriFor(Track track) async {
-    if (_resolved.containsKey(track.id)) return _resolved[track.id];
+    final key = (track.id, track.path);
+    if (_resolved.containsKey(key)) return _resolved[key];
 
     final uri = await _resolve(track);
-    _resolved[track.id] = uri;
+    _resolved[key] = uri;
     return uri;
   }
 
@@ -46,9 +48,10 @@ class NotificationArtwork {
     try {
       final directory = await (_directory ??= _openDirectory());
 
-      final embedded = await _query.queryArtwork(track.id, ArtworkType.AUDIO, size: 500);
-      if (embedded != null && embedded.isNotEmpty) {
-        return await _write(p.join(directory.path, 'track-${track.id}.jpg'), embedded);
+      final artwork = await readTrackArtwork(_query, track, size: 500);
+      if (artwork != null && artwork.isNotEmpty) {
+        final key = artworkFileKey(track.path);
+        return await _write(p.join(directory.path, 'track-$key.jpg'), artwork);
       }
 
       final asset = fallbackCoverAsset(track.id);

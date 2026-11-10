@@ -2,12 +2,15 @@ package com.example.music_player
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.util.AtomicFile
 import android.util.Log
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
@@ -17,6 +20,8 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
@@ -357,6 +362,7 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
             // A private scratch directory per download makes "which file did
             // this produce" answerable without parsing yt-dlp's output.
             val scratch = File(context.cacheDir, "ytdlp/$downloadId").apply { mkdirs() }
+            val thumbnails = File(scratch, "thumbnail")
 
             try {
                 val request = YoutubeDLRequest(url).apply {
@@ -365,6 +371,8 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
                     addOption("--audio-format", format)
                     addOption("--audio-quality", "0")
                     addOption("--embed-metadata")
+                    addOption("--write-thumbnail")
+                    addOption("--output", "thumbnail:${File(thumbnails, "cover.%(ext)s").absolutePath}")
                     addOption("--no-playlist")
                     // Leaves the file's timestamp at download time, so the
                     // library's "recently added" sort puts it on top.
@@ -421,7 +429,8 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
                     return@execute
                 }
 
-                val published = publishToMediaStore(produced, format)
+                val thumbnail = thumbnails.listFiles()?.firstOrNull { it.isFile }
+                val published = publishToMediaStore(produced, format, thumbnail)
                 Log.i(TAG, "download($downloadId) published to $published")
                 emit(
                     downloadId,
@@ -566,7 +575,7 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
      * Moves a finished download out of app storage into the shared Music
      * collection, returning the path the library scan will see.
      */
-    private fun publishToMediaStore(file: File, format: String): String? {
+    private fun publishToMediaStore(file: File, format: String, thumbnail: File?): String {
         val mime = when (format) {
             "mp3" -> "audio/mpeg"
             "m4a" -> "audio/mp4"
@@ -585,6 +594,7 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
             ).apply { mkdirs() }
             val destination = File(target, file.name)
             file.copyTo(destination, overwrite = true)
+            saveThumbnail(destination.absolutePath, thumbnail)
             MediaScannerConnection.scanFile(context, arrayOf(destination.absolutePath), arrayOf(mime), null)
             return destination.absolutePath
         }
@@ -608,15 +618,70 @@ class YtdlpBridge(private val context: Context, messenger: BinaryMessenger) {
             ?: throw IllegalStateException("Could not open the new track for writing")
         output.use { sink -> file.inputStream().use { source -> source.copyTo(sink) } }
 
+        // Save the cover before exposing the row so a concurrent scan can
+        // resolve the cover on its first attempt.
+        fun audioPath(): String? = try {
+            resolver.query(uri, arrayOf(MediaStore.Audio.Media.DATA), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not resolve the downloaded audio path", error)
+            null
+        }
+        val path = audioPath()
+        if (path != null) saveThumbnail(path, thumbnail)
+
         values.clear()
         values.put(MediaStore.Audio.Media.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
+        return path ?: audioPath()?.also { saveThumbnail(it, thumbnail) } ?: uri.toString()
+    }
 
-        // The library scans by file path, so resolve the row back to one.
-        resolver.query(uri, arrayOf(MediaStore.Audio.Media.DATA), null, null, null)?.use {
-            if (it.moveToFirst()) return it.getString(0)
+    private fun saveThumbnail(audioPath: String, thumbnail: File?) {
+        // Matches track_artwork.dart. The full path distinguishes downloads
+        // with the same title and does not depend on the MediaStore row ID.
+        val key = MessageDigest.getInstance("SHA-256").digest(audioPath.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        val directory = File(context.filesDir, "download_artwork")
+        val cover = AtomicFile(File(directory, "$key.jpg"))
+        try {
+            val bitmap = thumbnail?.let { decodeThumbnail(it) }
+            if (bitmap == null) {
+                cover.delete()
+                return
+            }
+
+            try {
+                directory.mkdirs()
+                val output = cover.startWrite()
+                try {
+                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output)) {
+                        throw IOException("Could not encode the download cover")
+                    }
+                    cover.finishWrite(output)
+                } catch (error: Exception) {
+                    cover.failWrite(output)
+                    throw error
+                }
+            } finally {
+                bitmap.recycle()
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not save the download cover", error)
         }
-        return uri.toString()
+    }
+
+    private fun decodeThumbnail(file: File): Bitmap? {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, options)
+        if (options.outWidth <= 0 || options.outHeight <= 0) return null
+
+        val longestSide = maxOf(options.outWidth, options.outHeight)
+        var sampleSize = 1
+        while (longestSide / sampleSize > 1200) sampleSize *= 2
+        options.inSampleSize = sampleSize
+        options.inJustDecodeBounds = false
+        return BitmapFactory.decodeFile(file.absolutePath, options)
     }
 
     // --- plumbing --------------------------------------------------------

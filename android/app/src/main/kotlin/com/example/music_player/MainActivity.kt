@@ -42,6 +42,7 @@ class MainActivity : AudioServiceActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
+                "sdkInt" -> result.success(Build.VERSION.SDK_INT)
                 // Scanning a real library walks thousands of MediaStore rows.
                 // Method-channel handlers run on the main thread, so doing that
                 // work here directly freezes the UI before it can paint a

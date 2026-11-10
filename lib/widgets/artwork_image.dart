@@ -2,9 +2,10 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:on_audio_query/on_audio_query.dart' show ArtworkType;
 
+import '../domain/track.dart';
 import '../features/library/providers/library_providers.dart';
+import '../services/audio/track_artwork.dart';
 import 'fallback_cover.dart';
 
 /// Artwork loader that fetches once per track and caches the result.
@@ -16,14 +17,14 @@ import 'fallback_cover.dart';
 class ArtworkImage extends ConsumerStatefulWidget {
   const ArtworkImage({
     super.key,
-    required this.trackId,
+    required this.track,
     required this.size,
     this.borderRadius = 8,
     this.iconSize,
     this.placeholderTint = 0.07,
   });
 
-  final int? trackId;
+  final Track? track;
   final double size;
   final double borderRadius;
   final double? iconSize;
@@ -40,33 +41,38 @@ class ArtworkImage extends ConsumerStatefulWidget {
   ConsumerState<ArtworkImage> createState() => _ArtworkImageState();
 }
 
-/// Artwork for one track, fetched once per id and kept.
+/// Artwork for one track, fetched once and kept.
 ///
 /// Public and cache-backed because more than one thing needs the answer now: a
 /// row draws it, and a playlist cover has to ask several tracks in turn which
 /// of them actually has a picture. Going through the widget for that would
 /// mean building one per candidate.
-Future<Uint8List?> loadArtwork(WidgetRef ref, int id) => _ArtworkCache.load(ref, id);
+Future<Uint8List?> loadArtwork(WidgetRef ref, Track track) =>
+    _ArtworkCache.load(ref, track);
 
 class _ArtworkCache {
   static const _maxEntries = 150;
-  static final Map<int, Uint8List?> _cache = {};
+  static final Map<(int, String), Uint8List?> _cache = {};
 
-  static bool contains(int id) => _cache.containsKey(id);
-  static Uint8List? peek(int id) => _cache[id];
+  static (int, String) key(Track track) => (track.id, track.path);
 
-  static Future<Uint8List?> load(WidgetRef ref, int id) async {
-    if (_cache.containsKey(id)) return _cache[id];
+  static bool contains(Track track) => _cache.containsKey(key(track));
+  static Uint8List? peek(Track track) => _cache[key(track)];
 
-    final bytes = await ref.read(onAudioQueryProvider).queryArtwork(id, ArtworkType.AUDIO, size: 400);
+  static Future<Uint8List?> load(WidgetRef ref, Track track) async {
+    final cacheKey = key(track);
+    if (_cache.containsKey(cacheKey)) return _cache[cacheKey];
+
+    final bytes = await readTrackArtwork(ref.read(onAudioQueryProvider), track, size: 400);
 
     if (_cache.length >= _maxEntries) _cache.remove(_cache.keys.first);
-    return _cache[id] = bytes;
+    return _cache[cacheKey] = bytes;
   }
 }
 
 class _ArtworkImageState extends ConsumerState<ArtworkImage> {
   Uint8List? _bytes;
+  int _request = 0;
 
   /// Whether the artwork query has answered for the current track.
   ///
@@ -85,7 +91,8 @@ class _ArtworkImageState extends ConsumerState<ArtworkImage> {
   @override
   void didUpdateWidget(ArtworkImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.trackId != widget.trackId) {
+    if (oldWidget.track?.id != widget.track?.id ||
+        oldWidget.track?.path != widget.track?.path) {
       _bytes = null;
       _resolved = false;
       _load();
@@ -93,19 +100,20 @@ class _ArtworkImageState extends ConsumerState<ArtworkImage> {
   }
 
   Future<void> _load() async {
-    final id = widget.trackId;
-    if (id == null) return;
+    final request = ++_request;
+    final track = widget.track;
+    if (track == null) return;
 
-    if (_ArtworkCache.contains(id)) {
+    if (_ArtworkCache.contains(track)) {
       setState(() {
-        _bytes = _ArtworkCache.peek(id);
+        _bytes = _ArtworkCache.peek(track);
         _resolved = true;
       });
       return;
     }
 
-    final bytes = await _ArtworkCache.load(ref, id);
-    if (!mounted) return;
+    final bytes = await loadArtwork(ref, track);
+    if (!mounted || request != _request) return;
     setState(() {
       _bytes = bytes;
       _resolved = true;
@@ -118,7 +126,7 @@ class _ArtworkImageState extends ConsumerState<ArtworkImage> {
     final bytes = _bytes;
 
     if (bytes == null || bytes.isEmpty) {
-      final id = widget.trackId;
+      final id = widget.track?.id;
 
       // A track the scan knows about but that carries no picture gets one of
       // the bundled sleeves instead of a blank. Half a ripped library has no

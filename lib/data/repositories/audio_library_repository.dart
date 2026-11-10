@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 
 import '../../domain/track.dart';
@@ -17,9 +18,7 @@ const _excludedPathFragments = [
 class LibraryScan {
   LibraryScan({required this.firstPass, required this.complete});
 
-  /// Rows from `on_audio_query` alone — the audio collection on the primary
-  /// volume, which on a typical device is nearly the whole library, and the
-  /// source with the best metadata.
+  /// Rows from the plugin, or the native scan if the plugin rejects access.
   final Future<List<Track>> firstPass;
 
   /// The union with the broader native query, or null when that query turned
@@ -51,7 +50,14 @@ class AudioLibraryRepository {
     final pluginRows = _queryViaPlugin();
     final nativeRows = _scanner.queryAudioFiles();
 
-    final firstPass = pluginRows.then((tracks) => tracks.where(_isWanted).toList());
+    final firstPass = pluginRows.onError<PlatformException>((error, stackTrace) {
+      if (error.code != 'MissingPermissions') {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      // The plugin checks extra permissions that Android does not require for
+      // reading audio. The native scan uses the permission already granted.
+      return nativeRows;
+    }).then((tracks) => tracks.where(_isWanted).toList());
 
     return LibraryScan(
       firstPass: firstPass,

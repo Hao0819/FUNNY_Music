@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../domain/track.dart';
 import '../../../widgets/artwork_image.dart';
 import '../../../widgets/fallback_cover.dart';
 import '../providers/folder_providers.dart';
@@ -58,10 +59,10 @@ class _PlaylistCoverState extends ConsumerState<PlaylistCover> {
         '${contents?.tracks.isEmpty ?? true ? '' : contents!.tracks.first.path}';
     if (key != _resolvedFor) {
       _resolvedFor = key;
-      final trackIds = contents?.tracks.map((track) => track.id).toList() ?? const <int>[];
+      final tracks = contents?.tracks ?? const <Track>[];
       // Off the build pass: a picked cover file and an empty playlist both
       // resolve without ever awaiting, and setState during build throws.
-      scheduleMicrotask(() => _resolve(folder?.coverPath, trackIds));
+      scheduleMicrotask(() => _resolve(folder?.coverPath, tracks));
     }
 
     final file = _file;
@@ -98,7 +99,7 @@ class _PlaylistCoverState extends ConsumerState<PlaylistCover> {
     );
   }
 
-  Future<void> _resolve(String? coverPath, List<int> trackIds) async {
+  Future<void> _resolve(String? coverPath, List<Track> tracks) async {
     if (coverPath != null) {
       final file = File(coverPath);
       if (file.existsSync()) {
@@ -109,8 +110,9 @@ class _PlaylistCoverState extends ConsumerState<PlaylistCover> {
       // the playlist still shows something rather than a hole.
     }
 
-    for (final id in trackIds.take(PlaylistCover.searchDepth)) {
-      final bytes = await loadArtwork(ref, id);
+    for (final track in tracks.take(PlaylistCover.searchDepth)) {
+      if (!mounted) return;
+      final bytes = await loadArtwork(ref, track);
       if (bytes != null && bytes.isNotEmpty) {
         if (mounted) setState(() { _bytes = bytes; _file = null; _fallbackSeed = null; });
         return;
@@ -124,7 +126,7 @@ class _PlaylistCoverState extends ConsumerState<PlaylistCover> {
       setState(() {
         _bytes = null;
         _file = null;
-        _fallbackSeed = trackIds.isEmpty ? null : trackIds.first;
+        _fallbackSeed = tracks.firstOrNull?.id;
       });
     }
   }

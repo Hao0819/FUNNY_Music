@@ -207,6 +207,6 @@ class _MiniArtwork extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final track = ref.watch(trackByPathProvider(mediaItemId));
-    return ArtworkImage(trackId: track?.id, size: 44, borderRadius: 10, iconSize: 18);
+    return ArtworkImage(track: track, size: 44, borderRadius: 10, iconSize: 18);
   }
 }
